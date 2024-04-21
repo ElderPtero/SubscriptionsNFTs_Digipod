@@ -7,11 +7,12 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 /**
  * @title The subscription core contract
  * @notice Allows for users to buy subscriptions, claim and set rewards
  */
+
 contract SubscriptionManagement is Initializable, AccessControlUpgradeable, ReentrancyGuardUpgradeable {
     uint16 constant basis_points = 10_000;
     uint16 public platform_fee;
@@ -20,6 +21,7 @@ contract SubscriptionManagement is Initializable, AccessControlUpgradeable, Reen
     address payable public podPayments;
     address public podNFTfactory;
     uint256 public projectsCounter;
+    bytes32 public whitelistMerkleRoot;
 
     /// @notice id -> The Project Id
     /// @notice nftContract --> address of the project NFT contract
@@ -42,23 +44,23 @@ contract SubscriptionManagement is Initializable, AccessControlUpgradeable, Reen
     mapping(uint256 => ProjectInfo) public projects;
     //projectId => rewardId => bool
     mapping(uint256 => mapping(uint256 => bool)) public paid;
-    mapping(uint256 => uint256) private owner_rev;
+    mapping(uint256 => uint256) public owner_rev;
 
     // projectId => collectorAddess => bool
     mapping(uint256 => mapping(address => bool)) public whitelist;
     // projectId => whitelistStatus 0 closed, 1 whitelist open, 2 public sale open
     mapping(uint256 => uint256) public whitelistStatus;
-    // projectId => blocked
-    mapping(uint256 => bool) public blocked;
+
     // projectId => Subscription CID
     mapping(uint256 => string) private _subscriptionCIDs;
 
     event CreateProjectAccount(uint256 id, address artist, string _name, string _symbol);
-    event BuySubscription(address indexed buyer, uint256 nftId, uint256 projectId, string cid);
+    event BoughtSubscription(address indexed buyer, uint256 nftId, uint256 projectId, string cid);
     event SubscriptionAllowlist(uint256 projectId, address user);
 
     error SubscriptionMgmt__TrasnferOwner_NotOnwer();
     error SubscriptionMgmt__BlockContract_NotOnwer();
+    error SubscriptionMgmt__BlockContract_AlreadyBlocked();
     error SubscriptionMgmt__SetWhitelist_NotOnwer();
     error SubscriptionMgmt__setWhitelistStatus_NotOnwer();
     error SubscriptionMgmt__setWhitelistStatus_InvalidStatus();
@@ -67,7 +69,6 @@ contract SubscriptionManagement is Initializable, AccessControlUpgradeable, Reen
     error SubscriptionMgmt__ClaimFunds_FundsClaimed();
     error SubscriptionMgmt__CreateProject_InvalidNameOrSymbol();
     error SubscriptionMgmt__InvalidNrSubscBuyers();
-    error SubscriptionMgmt__BuySubscription_ProjectBlockedSubscription();
     error SubscriptionMgmt__BuySubscription_ProjectBlockedFactory();
     error SubscriptionMgmt__BuySubscription_SaleNotOpen();
     error SubscriptionMgmt__BuySubscription_NotWhitelisted();
@@ -114,7 +115,6 @@ contract SubscriptionManagement is Initializable, AccessControlUpgradeable, Reen
         _subscriptionCIDs[projectId] = _CID;
         // store key project info --> do we need all of this?
         projects[projectId] = ProjectInfo(_price, msg.sender, nftContractAddress, _maxBuyer, 0, _backendId, _rewards);
-        blocked[projectId] = false; // initialize blocked
         // might want to emit project creation instead of all this/ TBSEEN
         return projectId;
     }
@@ -138,14 +138,9 @@ contract SubscriptionManagement is Initializable, AccessControlUpgradeable, Reen
         projectId = projectsCounter - 1;
     }
 
-    function setWhitelist(uint256 projectId, address[] memory allowlist) public {
+    function setWhitelist(uint256 projectId, bytes32 _whitelistMerkleRoot) public {
         if (projects[projectId].projectOwner != msg.sender) revert SubscriptionMgmt__SetWhitelist_NotOnwer();
-        uint256 lenght = allowlist.length;
-
-        for (uint16 i = 0; i < lenght; i++) {
-            whitelist[projectId][allowlist[i]] = true;
-            emit SubscriptionAllowlist(projectId, allowlist[i]);
-        }
+        whitelistMerkleRoot = _whitelistMerkleRoot;
     }
 
     function setWhitelistStatus(uint256 projectId, uint256 status) public {
@@ -157,20 +152,38 @@ contract SubscriptionManagement is Initializable, AccessControlUpgradeable, Reen
 
     /*added to input parameters: string cid (from IPFS)*/
     // months unused on pourpuse TODO - remove completly
-    function buySubscription(uint256 projectId) public payable nonReentrant {
+
+    function buySubscriptionWhitelist(uint256 projectId, bytes32[] memory _proof) public payable nonReentrant {
         //Require not blocked
-        string memory subscriptionCID = _subscriptionCIDs[projectId];
-        if (blocked[projectId]) revert SubscriptionMgmt__BuySubscription_ProjectBlockedSubscription();
         if (Factory1167(podNFTfactory).isBlocked(projectId)) {
             revert SubscriptionMgmt__BuySubscription_ProjectBlockedFactory();
         }
-        if (whitelistStatus[projectId] == 0) {
+        if (projects[projectId].currentBuyers == projects[projectId].maxBuyers) {
+            revert SubscriptionMgmt__BuySubscription_SoldOut();
+        }
+        if (whitelistStatus[projectId] == 0 || whitelistStatus[projectId] == 2) {
             revert SubscriptionMgmt__BuySubscription_SaleNotOpen();
         } else if (whitelistStatus[projectId] == 1) {
-            if (!whitelist[projectId][msg.sender]) revert SubscriptionMgmt__BuySubscription_NotWhitelisted();
-            _processPurchase(projectId, subscriptionCID);
-        } else if (whitelistStatus[projectId] == 2) {
-            _processPurchase(projectId, subscriptionCID);
+            bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+            if (!MerkleProof.verify(_proof, whitelistMerkleRoot, leaf)) {
+                revert SubscriptionMgmt__BuySubscription_NotWhitelisted();
+            }
+            _processPurchase(projectId, _subscriptionCIDs[projectId]);
+        }
+    }
+
+    function buySubscription(uint256 projectId) public payable nonReentrant {
+        //Require not blocked
+        if (Factory1167(podNFTfactory).isBlocked(projectId)) {
+            revert SubscriptionMgmt__BuySubscription_ProjectBlockedFactory();
+        }
+        if (projects[projectId].currentBuyers == projects[projectId].maxBuyers) {
+            revert SubscriptionMgmt__BuySubscription_SoldOut();
+        }
+        if (whitelistStatus[projectId] == 0 || whitelistStatus[projectId] == 1) {
+            revert SubscriptionMgmt__BuySubscription_SaleNotOpen();
+        } else {
+            _processPurchase(projectId, _subscriptionCIDs[projectId]);
         }
     }
 
@@ -182,9 +195,6 @@ contract SubscriptionManagement is Initializable, AccessControlUpgradeable, Reen
 
         //Require that value is equal or higher to price
         if (msg.value < price) revert SubscriptionMgmt__BuySubscription_NotEnoughEth();
-        if (projects[projectId].currentBuyers == projects[projectId].maxBuyers) {
-            revert SubscriptionMgmt__BuySubscription_SoldOut();
-        }
 
         (bool success0,) = payable(projects[projectId].projectOwner).call{ value: owner_adv }("");
         if (!success0) revert SubscriptionMgmt__BuySubscription_FailedETHCreator();
@@ -196,7 +206,13 @@ contract SubscriptionManagement is Initializable, AccessControlUpgradeable, Reen
         uint256 nftId = projects[projectId].currentBuyers;
         Factory1167(podNFTfactory).mintSubscriptionNFT(projectId, nftId, CID); // mint NFT reward
         projects[projectId].currentBuyers++;
-        emit BuySubscription(msg.sender, nftId, projectId, CID);
+        emit BoughtSubscription(msg.sender, nftId, projectId, CID);
+    }
+
+    function blockContract(uint256 projectId) public {
+        if (projects[projectId].projectOwner != msg.sender) revert SubscriptionMgmt__BlockContract_NotOnwer();
+        if (Factory1167(podNFTfactory).isBlocked(projectId)) revert SubscriptionMgmt__BlockContract_AlreadyBlocked();
+        Factory1167(podNFTfactory).blockContract(projectId);
     }
 
     function getTypeRewards(uint256 projectId) external view returns (uint8[] memory) {
@@ -207,16 +223,18 @@ contract SubscriptionManagement is Initializable, AccessControlUpgradeable, Reen
         return projects[_project];
     }
 
+    function getPayablePerReward(uint256 _project) public view returns (uint256) {
+        return projects[_project].currentBuyers * owner_rev[_project] / projects[_project].rewards.length;
+    }
+
+    function update(uint256 _project) public view returns (ProjectInfo memory) {
+        return projects[_project];
+    }
+
     function transferOwnership(uint256 projectId, address newOwner) public {
         // TO DO: fix this, we should change onwer of actual contract, otherwise is just an ADMIN
         if (projects[projectId].projectOwner != msg.sender) revert SubscriptionMgmt__TrasnferOwner_NotOnwer();
         projects[projectId].projectOwner = newOwner;
-    }
-
-    function blockContract(uint256 projectId) public {
-        if (projects[projectId].projectOwner != msg.sender) revert SubscriptionMgmt__BlockContract_NotOnwer();
-        Factory1167(podNFTfactory).blockContract(projectId);
-        blocked[projectId] = true;
     }
 
     function setFees(uint16 _platform_fee) public onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -228,29 +246,6 @@ contract SubscriptionManagement is Initializable, AccessControlUpgradeable, Reen
     }
 
     // REMOVED REFUND FROM THIS VERSION
-    function claimFunds(uint256 projectId, uint32 rewardId) public {
-        // think there is a loophole here
-        if (
-            !(
-                projects[projectId].projectOwner == msg.sender
-                    && Factory1167(podNFTfactory).indexToOwner(projectId) == msg.sender
-            )
-        ) {
-            revert SubscriptionMgmt__ClaimFunds_NotOnwer();
-        }
-        if (!Factory1167(podNFTfactory).isValid(projectId, rewardId)) {
-            revert SubscriptionMgmt__ClaimFunds_RewardNotValidated();
-        }
-        if (paid[projectId][rewardId]) {
-            revert SubscriptionMgmt__ClaimFunds_FundsClaimed();
-        }
-        uint256 totalRewards = projects[projectId].rewards.length;
-        // uint256 amount = Math.div(Math.sub(price, fees), total); //(price - fees) / total;
-        //updated for 0.8.20
-        uint256 amount = owner_rev[projectId] / totalRewards;
-        Payments(podPayments).withdraw(payable(msg.sender), amount);
-        paid[projectId][rewardId] = true;
-    }
 
     function isValidId(uint256 projectId, uint256 id) public view returns (bool) {
         return (id >= 0 && id < projects[projectId].maxBuyers);

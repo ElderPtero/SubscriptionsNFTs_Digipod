@@ -49,7 +49,7 @@ contract TestDeployDigipodTest is Test {
     }
 
     function test_ProxyFactoryIsOPERATORPayments() public view {
-        bool hasRole = payments.hasRole(keccak256("OPERATOR_ROLE"), address(proxySubscriptionManagement));
+        bool hasRole = payments.hasRole(keccak256("OPERATOR_ROLE"), address(proxyFactory1167));
         bool testExpected = true;
         assertEq(hasRole, testExpected);
     }

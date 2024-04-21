@@ -66,8 +66,10 @@ contract TestDeployDigipod is Script {
         //Roles
 
         proxyFactory1167.setSubscriptionAddress(address(proxySubscriptionManagement));
+        proxyFactory1167.setPaymentsAddress(payable(address(payments)));
         proxyFactory1167.grantRole(keccak256("DEPLOYER_ROLE"), address(proxySubscriptionManagement));
-        payments.grantRole(keccak256("OPERATOR_ROLE"), address(proxySubscriptionManagement));
+        //payments.grantRole(keccak256("OPERATOR_ROLE"), address(proxySubscriptionManagement));
+        payments.grantRole(keccak256("OPERATOR_ROLE"), address(proxyFactory1167));
         //// 0x0000000000000000000000000000000000000000000000000000000000000000 is Default ADMIN Role in OpenZeppeling
         // Contracts
         proxySubscriptionManagement.grantRole(

@@ -11,18 +11,21 @@ contract Factory1167 is Initializable, AccessControlUpgradeable {
     bytes32 public constant DEPLOYER_ROLE = keccak256("DEPLOYER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     address public subscriptionAddress;
+    address payable public paymentsAddress;
     Rewards1167[] public contracts; //an array that contains different ERC721 contracts deployed
 
     // projectId, RewardId, bool
-    mapping(uint256 => mapping(uint32 => bool)) public rewardValid;
+    mapping(uint256 => mapping(uint32 => bool)) public rewardSubmitted;
     mapping(uint256 => address) public indexToOwner; //index to ERC721 owner address
     //mapping(uint256 => mapping(uint256 => address)) public indexToBuyer; //index to ERC-721 buyer address
     mapping(uint256 => mapping(uint256 => string)) public indexToCID; //index to ERC-721 CID
     //[projectId][tierId][rewardId]++;
-    mapping(uint256 => mapping(uint32 => uint256)) public rewardCounter;
+    mapping(uint256 => mapping(uint32 => uint256)) private rewardCounter;
     //projectId -> subscriptionId => rewardsId => bool
-    mapping(uint256 => mapping(uint256 => mapping(uint256 => bool))) public userMintedRewards;
+    mapping(uint256 => mapping(uint256 => mapping(uint256 => bool))) private userMintedRewards;
     address public contractBase;
+    // projectId => creatorClaimableParts from total revenue
+    mapping(uint256 => uint256) public creatorClaimableParts;
 
     struct ProjectInfo {
         uint256 price;
@@ -41,7 +44,7 @@ contract Factory1167 is Initializable, AccessControlUpgradeable {
     error Factory1167__BlockingByNonOnwer();
     error Factory1167__setValid_ProjectNotClosed();
     error Factory1167__setValid_NotOnwer();
-    error Factory1167__setValid_InvalidArrayLength();
+    error Factory1167__setValid_InvalidCIDsLength();
     error Factory1167__setValid_InvalidRewardId();
     error Factory1167__setValid_nftIdsNotMatchSubscriptionNr();
     error Factory1167__setValid_InvalidNFTIDs();
@@ -50,9 +53,10 @@ contract Factory1167 is Initializable, AccessControlUpgradeable {
     error Factory1167__MintReward_ProjectNotClosed();
     error Factory1167__MintReward_SubscriptionNFTNotValid();
     error Factory1167__MintReward_NonSubscriptor();
-    error Factory1167__MintReward_RewardNotValid();
+    error Factory1167__MintReward_RewardNotSubmitted();
     error Factory1167__MintReward_AlreadyMinted();
     error Factory1167__MintReward_AllRewardsHaveBeenMinted();
+    error Factory1167__ClaimFunds_NotOnwer();
     /// @custom:oz-upgrades-unsafe-allow constructor
 
     constructor() {
@@ -70,9 +74,7 @@ contract Factory1167 is Initializable, AccessControlUpgradeable {
         contractBase = base;
     }
 
-    function blockContract(uint256 projectId) public {
-        if (indexToOwner[projectId] != tx.origin) revert Factory1167__BlockingByNonOnwer(); // TO TEST PROPERLY,
-            // tx.origin because can be called from subscriptionManagement.
+    function blockContract(uint256 projectId) external onlyRole(DEPLOYER_ROLE) {
         contracts[projectId].toBlock();
     }
 
@@ -82,6 +84,10 @@ contract Factory1167 is Initializable, AccessControlUpgradeable {
 
     function setSubscriptionAddress(address _subscription) public onlyRole(DEFAULT_ADMIN_ROLE) {
         subscriptionAddress = _subscription;
+    }
+
+    function setPaymentsAddress(address payable _payments) public onlyRole(DEFAULT_ADMIN_ROLE) {
+        paymentsAddress = _payments;
     }
 
     function deployDigipodNFTContract(
@@ -98,6 +104,7 @@ contract Factory1167 is Initializable, AccessControlUpgradeable {
         t.initialize(payable(contractOnwer), royalty, name, symbol, contractOnwer);
         contracts.push(t);
         indexToOwner[contracts.length - 1] = contractOnwer;
+        creatorClaimableParts[contracts.length - 1] = 0;
         emit ERC721Created(tx.origin, address(t));
         return address(t);
     }
@@ -106,45 +113,42 @@ contract Factory1167 is Initializable, AccessControlUpgradeable {
         if (indexToOwner[projectId] != msg.sender) revert Factory1167__setValid_NotOnwer(); // not onwer
         SubscriptionManagement.ProjectInfo memory projectInfo =
             SubscriptionManagement(subscriptionAddress).getProject(projectId);
-        if (!isBlocked(projectId) || projectInfo.currentBuyers != projectInfo.maxBuyers) {
+        if (!isBlocked(projectId) && projectInfo.currentBuyers != projectInfo.maxBuyers) {
             // project not closed
             revert Factory1167__setValid_ProjectNotClosed();
         }
         if (rewardId >= projectInfo.rewards.length) revert Factory1167__setValid_InvalidRewardId(); // reward invalid
         if (nftIds.length != projectInfo.currentBuyers) revert Factory1167__setValid_nftIdsNotMatchSubscriptionNr();
         //add check if reward has been validated already
-        if (nftIds.length != CIDs.length) revert Factory1167__setValid_InvalidArrayLength();
+        if (nftIds.length != CIDs.length) revert Factory1167__setValid_InvalidCIDsLength();
         // ids and CIDs not matching
         uint256 length = nftIds.length;
         uint256 lowerNFTid = projectInfo.maxBuyers + (rewardId * projectInfo.currentBuyers);
         uint256 maxNFTid = lowerNFTid + projectInfo.currentBuyers - 1;
-        if (rewardValid[projectId][rewardId]) revert Factory1167_setValid_RewardAlreadyValidated(); // reward
+        if (rewardSubmitted[projectId][rewardId]) revert Factory1167_setValid_RewardAlreadyValidated(); // reward
         for (uint32 i; i < length; i++) {
             if (nftIds[i] < lowerNFTid || nftIds[i] > maxNFTid) revert Factory1167__setValid_InvalidNFTIDs(); // check
             indexToCID[projectId][nftIds[i]] = CIDs[i];
         }
-        rewardValid[projectId][rewardId] = true;
+        rewardSubmitted[projectId][rewardId] = true;
+        uint256 payablePerReward = SubscriptionManagement(subscriptionAddress).getPayablePerReward(projectId);
+        Payments(paymentsAddress).withdraw(payable(msg.sender), payablePerReward);
     }
 
     /* When claim by collector */
     function mintRewardNFT(uint256 projectId, uint32 rewardId, uint256 tokenSubscriptionId) public {
+        if (!rewardSubmitted[projectId][rewardId]) revert Factory1167__MintReward_RewardNotSubmitted();
         SubscriptionManagement.ProjectInfo memory projectInfo =
             SubscriptionManagement(subscriptionAddress).getProject(projectId);
-        if (!isBlocked(projectId) || projectInfo.currentBuyers != projectInfo.maxBuyers) {
-            revert Factory1167__MintReward_ProjectNotClosed();
+        if (!SubscriptionManagement(subscriptionAddress).isValidId(projectId, tokenSubscriptionId)) {
+            revert Factory1167__MintReward_SubscriptionNFTNotValid();
+        }
+        if (contracts[projectId].ownerOf(tokenSubscriptionId) != msg.sender) {
+            revert Factory1167__MintReward_NonSubscriptor();
         }
         if (userMintedRewards[projectId][tokenSubscriptionId][rewardId]) {
             revert Factory1167__MintReward_AlreadyMinted();
         }
-        if (!SubscriptionManagement(subscriptionAddress).isValidId(projectId, tokenSubscriptionId)) {
-            revert Factory1167__MintReward_SubscriptionNFTNotValid();
-        }
-
-        if (contracts[projectId].ownerOf(tokenSubscriptionId) != msg.sender) {
-            revert Factory1167__MintReward_NonSubscriptor();
-        }
-
-        if (!rewardValid[projectId][rewardId]) revert Factory1167__MintReward_RewardNotValid();
 
         uint256 tokenId =
             projectInfo.maxBuyers + (rewardId * projectInfo.currentBuyers) + rewardCounter[projectId][rewardId]++;
@@ -154,7 +158,7 @@ contract Factory1167 is Initializable, AccessControlUpgradeable {
     }
 
     function isValid(uint256 projectId, uint32 reward_id) public view returns (bool) {
-        return rewardValid[projectId][reward_id];
+        return rewardSubmitted[projectId][reward_id];
     }
 
     function ownerOf(uint256 projectId, uint256 nftId) external view returns (address) {
@@ -187,18 +191,6 @@ contract Factory1167 is Initializable, AccessControlUpgradeable {
             revert Factory1167__InvalidSubscriptionNFTId();
         }
         contracts[projectId].safeMint(tx.origin, tokenSubscriptionId, tokenURI);
-    }
-
-    function getuserMintedRewards(
-        uint256 projectId,
-        uint256 nftSubscriptionId,
-        uint256 rewardId
-    )
-        public
-        view
-        returns (bool)
-    {
-        return userMintedRewards[projectId][nftSubscriptionId][rewardId];
     }
 
     function getInstanceAddress(uint256 projectId) public view returns (address _contract) {

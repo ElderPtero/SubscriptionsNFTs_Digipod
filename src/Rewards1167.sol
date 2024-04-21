@@ -26,7 +26,7 @@ contract Rewards1167 is
     bool public blocked;
 
     error Rewards1167__RoyaltyTooHigh();
-    error Rewards1167__ProjectIsBlocked();
+
     /*
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {

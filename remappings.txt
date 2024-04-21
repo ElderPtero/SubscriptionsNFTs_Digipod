@@ -2,3 +2,4 @@
 @openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/
 @prb/test/=node_modules/@prb/test/
 forge-std/=lib/forge-std/src/
+@murky/=lib/murky/src/

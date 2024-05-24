@@ -58,7 +58,7 @@ contract Rewards1167 is
         __ERC721_init(name, symbol);
         __ERC721Enumerable_init();
         __ERC721URIStorage_init();
-        __Pausable_init();
+        __ERC721Pausable_init();
         __AccessControl_init();
         __ERC721Burnable_init();
         _grantRole(DEFAULT_ADMIN_ROLE, contractOnwer);
@@ -98,27 +98,16 @@ contract Rewards1167 is
     }
 
     // The following functions are overrides required by Solidity.
-
-    function tokenURI(uint256 tokenId)
-        public
-        view
-        override(ERC721Upgradeable, ERC721URIStorageUpgradeable)
-        returns (string memory)
-    {
-        return super.tokenURI(tokenId);
-    }
-
     function _update(
         address to,
         uint256 tokenId,
         address auth
     )
         internal
-        virtual
         override(ERC721Upgradeable, ERC721EnumerableUpgradeable, ERC721PausableUpgradeable)
         returns (address)
     {
-        super._update(to, tokenId, auth);
+        return super._update(to, tokenId, auth);
     }
 
     function _increaseBalance(
@@ -131,15 +120,24 @@ contract Rewards1167 is
         super._increaseBalance(account, value);
     }
 
+    function tokenURI(uint256 tokenId)
+        public
+        view
+        override(ERC721Upgradeable, ERC721URIStorageUpgradeable)
+        returns (string memory)
+    {
+        return super.tokenURI(tokenId);
+    }
+
     function supportsInterface(bytes4 interfaceId)
         public
         view
         override(
             ERC721Upgradeable,
-            AccessControlUpgradeable,
-            ERC721RoyaltyUpgradeable,
             ERC721EnumerableUpgradeable,
-            ERC721URIStorageUpgradeable
+            ERC721URIStorageUpgradeable,
+            AccessControlUpgradeable,
+            ERC721RoyaltyUpgradeable
         )
         returns (bool)
     {

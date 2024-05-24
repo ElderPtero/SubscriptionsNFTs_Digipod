@@ -8,7 +8,7 @@ evm_version = "paris"            # See https://www.evmdiff.com/features?name=PUS
 fuzz = { runs = 1_000 }
 gas_reports = ["*"]
 optimizer = true
-optimizer_runs = 1000
+optimizer_runs = 99999
 out = "out"
 script = "script"
 solc = "0.8.20"

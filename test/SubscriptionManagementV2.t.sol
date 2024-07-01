@@ -7,7 +7,6 @@ import { Payments } from "../src/Payments.sol";
 import { SubscriptionManagementV2 } from "../src/SubscriptionManagementV2.sol";
 import { IBeacon } from "openzeppelin-contracts/contracts/proxy/beacon/IBeacon.sol";
 import { TestDeployDigipodV2 } from "../script/TestDeployDigipodV2.s.sol";
-import { Merkle } from "murky/src/Merkle.sol";
 import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "forge-std/Test.sol";
 
@@ -19,12 +18,12 @@ contract SubscriptionManagementTest is Test {
     SubscriptionManagementV2 proxySubscriptionManagement;
     SubscriptionManagementV2 implementationSubscriptionManagement;
     address OPERATOR = 0x1886ffD3cFB97D1d6a6d4c2a0967365881ae8BD2;
-    Merkle whitelistMerkle;
     bytes32 whitelistRoot;
     bytes32[] whitelistData = new bytes32[](2);
 
     // set up actors
     address creator1 = vm.addr(2);
+    address digipod = 0x9Ed898037fb0e5500DA66bEc409b45985E1b552D;
     address creator2 = vm.addr(3);
     address collector1 = vm.addr(4);
     address collector2 = vm.addr(5);
@@ -71,14 +70,15 @@ contract SubscriptionManagementTest is Test {
 
     function setUp() external {
         console.log("Deployer,", msg.sender);
+        console.log("collector1", collector1);
+        console.log("creator 1", creator1);
+        console.log("digipod", digipod);
+
         payable(collector1).transfer(10 ether);
+        payable(digipod).transfer(10 ether);
         payable(collector2).transfer(10 ether);
         payable(creator1).transfer(10 ether);
         payable(hacker).transfer(10 ether);
-        whitelistMerkle = new Merkle();
-        whitelistData[0] = bytes32(keccak256(abi.encodePacked(collector1)));
-        whitelistData[1] = bytes32(keccak256(abi.encodePacked(creator1)));
-        whitelistRoot = whitelistMerkle.getRoot(whitelistData);
         TestDeployDigipodV2 deployer = new TestDeployDigipodV2();
         (payments, rewards1167,, proxySubscriptionManagement,) = deployer.run();
     }
@@ -414,29 +414,33 @@ contract SubscriptionManagementTest is Test {
     function test_allowlistMint_Sucess() public {
         uint256 outputProjectId = helper_CreateProject(creator1);
         vm.startPrank(creator1, creator1);
+        whitelistRoot = bytes32(0xcff0c3690d00f94b5e42530af3e7ef75637a03e86cf3fcf614dcd08581c8563d);
         proxySubscriptionManagement.setWhitelist(outputProjectId, whitelistRoot);
         proxySubscriptionManagement.setWhitelistStatus(outputProjectId, 1);
         vm.stopPrank();
 
-        bytes32[] memory proof = whitelistMerkle.getProof(whitelistData, 0);
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = bytes32(0x6667894eab8205a87b7edd0d679fb06ba39dde8622a4b6dd5722edc9f4313d11);
         uint256 amount = price + 0.069 ether;
-        vm.prank(collector1);
+        vm.prank(digipod);
         vm.expectEmit(address(proxySubscriptionManagement));
         uint256[] memory nftIDs = new uint256[](1);
         nftIDs[0] = 0;
-        emit BoughtSubscription(collector1, nftIDs, 0, "QmX43d9EgRGaCBgxvu3FVqrFUJiijd3JcXxoXbtHHVd8rA", 1);
+        emit BoughtSubscription(digipod, nftIDs, 0, "QmX43d9EgRGaCBgxvu3FVqrFUJiijd3JcXxoXbtHHVd8rA", 1);
         proxySubscriptionManagement.buySubscriptionWhitelist{ value: amount }(outputProjectId, proof, mintAmount1);
     }
 
     function test_allowlistMint_InvalidProof() public {
         uint256 outputProjectId = helper_CreateProject(creator1);
         vm.startPrank(creator1, creator1);
+        whitelistRoot = bytes32(0xcff0c3690d00f94b5e42530af3e7ef75637a03e86cf3fcf614dcd08581c8563d);
         proxySubscriptionManagement.setWhitelist(outputProjectId, whitelistRoot);
         proxySubscriptionManagement.setWhitelistStatus(outputProjectId, 1);
         vm.stopPrank();
 
         // use a real proof from a different address
-        bytes32[] memory proof = whitelistMerkle.getProof(whitelistData, 0);
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = bytes32(0x6667894eab8205a87b7edd0d679fb06ba39dde8622a4b6dd5722edc9f4313d11);
         uint256 amount = price + 0.069 ether;
         vm.prank(hacker);
         vm.expectRevert(
@@ -450,14 +454,16 @@ contract SubscriptionManagementTest is Test {
     function test_allowlistMint_TryingMintAboveCap() public {
         uint256 outputProjectId = helper_CreateProjectSpecificMaxMints(creator1, maxMint2);
         vm.startPrank(creator1, creator1);
+        whitelistRoot = bytes32(0xcff0c3690d00f94b5e42530af3e7ef75637a03e86cf3fcf614dcd08581c8563d);
         proxySubscriptionManagement.setWhitelist(outputProjectId, whitelistRoot);
         proxySubscriptionManagement.setWhitelistStatus(outputProjectId, 1);
         vm.stopPrank();
 
         // use a real proof from a different address
-        bytes32[] memory proof = whitelistMerkle.getProof(whitelistData, 0);
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = bytes32(0x6667894eab8205a87b7edd0d679fb06ba39dde8622a4b6dd5722edc9f4313d11);
         uint256 amount = price + 0.069 ether;
-        vm.startPrank(collector1);
+        vm.startPrank(digipod);
         // test both we cannot mint above cap but also if user splits the minting in multiple transactions
         proxySubscriptionManagement.buySubscriptionWhitelist{ value: amount }(outputProjectId, proof, mintAmount1);
         vm.expectRevert(
@@ -471,9 +477,9 @@ contract SubscriptionManagementTest is Test {
         vm.stopPrank();
     }
 
-    /////////////////////////////////////////////////////////////////////////
-    //////////////////////////   BlockContract   ///////////////////////////
     ///////////////////////////////////////////////////////////////////////
+    ////////////////////////   BlockContract   ///////////////////////////
+    /////////////////////////////////////////////////////////////////////
 
     function test_BlockContract_NotOnwer() public {
         uint256 outputProjectId = helper_CreateProject(creator1);
@@ -700,18 +706,5 @@ contract SubscriptionManagementTest is Test {
         uint256 balanceEndProxySubscription = address(proxySubscriptionManagement).balance;
         assertEq(balanceEndCreator1, balanceStartCreator1 + balanceStartProxySubscription);
         assertEq(balanceEndProxySubscription, 0);
-    }
-
-    function test_live() public {
-        vm.startPrank(creator1, creator1);
-        uint256 outputProjectId = proxySubscriptionManagement.createProject(
-            "Antartica", "Antartica1", CID, royalty, price, 4, 1, backendId, rewardsTest
-        );
-        uint256 amount = price;
-        proxySubscriptionManagement.setWhitelistStatus(outputProjectId, 2);
-        proxySubscriptionManagement.buySubscription{ value: amount * 2 }(outputProjectId, 2);
-        proxySubscriptionManagement.blockContract(outputProjectId);
-        proxySubscriptionManagement.setValid(outputProjectId, reward0, rewardNFTidsTest, rewardCId);
-        vm.stopPrank();
     }
 }

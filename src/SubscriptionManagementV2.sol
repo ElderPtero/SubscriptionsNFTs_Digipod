@@ -20,6 +20,7 @@ contract SubscriptionManagementV2 is Initializable, AccessControlUpgradeable, Re
     uint16 public advance_creator;
     address payable public podPayments;
     uint256 public projectsCounter;
+    uint256 public mintFee;
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     address public contractBase;
     Rewards1167[] public contracts; //an array that contains different ERC721 contracts deployed
@@ -92,6 +93,7 @@ contract SubscriptionManagementV2 is Initializable, AccessControlUpgradeable, Re
     error SubscriptionMgmt__MintReward_NonSubscriptor();
     error SubscriptionMgmt__MintReward_RewardNotSubmitted();
     error SubscriptionMgmt__MintReward_AlreadyMinted();
+    error SubscriptionMgmt__MintReward_NotEnoughEth();
     error SubscriptionMgmt__NotProjectOnwer();
     error SubscriptionMgmt__BuySubscription_NotEnoughNFTsForSale();
     error SubscriptionMgmt__BuySubscription_UserMaxMintReach();
@@ -116,6 +118,7 @@ contract SubscriptionManagementV2 is Initializable, AccessControlUpgradeable, Re
         contractBase = baseERC721contract;
         podPayments = payable(_payments);
         platform_fee = 500;
+        mintFee = 0;
         advance_creator = 1000;
     }
 
@@ -197,7 +200,8 @@ contract SubscriptionManagementV2 is Initializable, AccessControlUpgradeable, Re
         if (whitelistStatus[projectId] == 0 || whitelistStatus[projectId] == 2) {
             revert SubscriptionMgmt__BuySubscription_SaleNotOpen();
         } else if (whitelistStatus[projectId] == 1) {
-            bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+            bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(msg.sender))));
+
             if (!MerkleProof.verify(_proof, whitelistMerkleRoot[projectId], leaf)) {
                 revert SubscriptionMgmt__BuySubscriptionWhitelist_InvalidProof();
             }
@@ -237,9 +241,9 @@ contract SubscriptionManagementV2 is Initializable, AccessControlUpgradeable, Re
         uint256 fees = (price * platform_fee) / basis_points;
         uint256 owner_adv = (price * advance_creator) / basis_points;
         owner_rev[projectId] = projects[projectId].price - fees - owner_adv;
-
+        uint256 totalPayable = (price + mintFee) * mintAmount;
         //Require that value is equal or higher to price
-        if (msg.value < price * mintAmount) revert SubscriptionMgmt__BuySubscription_NotEnoughEth();
+        if (msg.value < totalPayable) revert SubscriptionMgmt__BuySubscription_NotEnoughEth();
 
         (bool success0,) = payable(projects[projectId].projectOwner).call{ value: owner_adv * mintAmount }("");
         if (!success0) revert SubscriptionMgmt__BuySubscription_FailedETHCreator();
@@ -304,7 +308,7 @@ contract SubscriptionManagementV2 is Initializable, AccessControlUpgradeable, Re
     }
 
     /* When claim by collector */
-    function mintRewardNFT(uint256 projectId, uint32 rewardId, uint256 tokenSubscriptionId) public {
+    function mintRewardNFT(uint256 projectId, uint32 rewardId, uint256 tokenSubscriptionId) public payable {
         if (!rewardSubmitted[projectId][rewardId]) revert SubscriptionMgmt__MintReward_RewardNotSubmitted();
         ProjectInfo memory projectInfo = getProject(projectId);
         if (!isValidId(projectId, tokenSubscriptionId)) {
@@ -316,7 +320,7 @@ contract SubscriptionManagementV2 is Initializable, AccessControlUpgradeable, Re
         if (userMintedRewards[projectId][tokenSubscriptionId][rewardId]) {
             revert SubscriptionMgmt__MintReward_AlreadyMinted();
         }
-
+        if (msg.value < mintFee) revert SubscriptionMgmt__MintReward_NotEnoughEth();
         uint256 tokenId =
             projectInfo.maxBuyers + (rewardId * projectInfo.currentBuyers) + rewardCounter[projectId][rewardId]++;
         userMintedRewards[projectId][tokenSubscriptionId][rewardId] = true;
@@ -355,5 +359,9 @@ contract SubscriptionManagementV2 is Initializable, AccessControlUpgradeable, Re
     function withdraw() external onlyRole(DEFAULT_ADMIN_ROLE) {
         (bool success,) = payable(msg.sender).call{ value: address(this).balance }("");
         require(success);
+    }
+
+    function updateMintFee(uint256 newMintFee) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        mintFee = newMintFee;
     }
 }
